@@ -1,7 +1,7 @@
-﻿using System;
+﻿using RabbitMQ.Client;
+using System;
 using System.Collections.Concurrent;
 using System.Threading.Tasks;
-using RabbitMQ.Client;
 
 namespace RawRabbit.Channel
 {
@@ -19,8 +19,14 @@ namespace RawRabbit.Channel
 		public TaskCompletionSource<IModel> Enqueue()
 		{
 			var modelTsc = new TaskCompletionSource<IModel>();
-			var raiseEvent = _queue.IsEmpty;
-			_queue.Enqueue(modelTsc);
+
+			bool raiseEvent;
+			lock (_queue)
+			{
+				raiseEvent = _queue.IsEmpty;
+				_queue.Enqueue(modelTsc);
+			}
+
 			if (raiseEvent)
 			{
 				Queued?.Invoke(this, EventArgs.Empty);
@@ -31,7 +37,10 @@ namespace RawRabbit.Channel
 
 		public bool TryDequeue(out TaskCompletionSource<IModel> channel)
 		{
-			return _queue.TryDequeue(out channel);
+			lock (_queue)
+			{
+				return _queue.TryDequeue(out channel);
+			}
 		}
 
 		public bool IsEmpty => _queue.IsEmpty;

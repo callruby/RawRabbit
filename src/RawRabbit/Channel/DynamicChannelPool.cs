@@ -19,23 +19,29 @@ namespace RawRabbit.Channel
 
 		public void Add(IEnumerable<IModel> channels)
 		{
-			foreach (var channel in channels)
+			lock (ThisLock)
 			{
-				ConfigureRecovery(channel);
-				if (Pool.Contains(channel))
+				foreach (var channel in channels)
 				{
-					continue;
+					ConfigureRecovery(channel);
+					if (Pool.Contains(channel))
+					{
+						continue;
+					}
+					Pool.AddLast(channel);
 				}
-				Pool.AddLast(channel);
 			}
 		}
 
 		public void Remove(int numberOfChannels = 1)
 		{
-			var toRemove = Pool
-				.Take(numberOfChannels)
-				.ToList();
-			Remove(toRemove);
+			lock (ThisLock)
+			{
+				var toRemove = Pool
+						.Take(numberOfChannels)
+						.ToList();
+				Remove(toRemove); 
+			}
 		}
 
 		public void Remove(params IModel[] channels)
@@ -45,10 +51,13 @@ namespace RawRabbit.Channel
 
 		public void Remove(IEnumerable<IModel> channels)
 		{
-			foreach (var channel in channels)
+			lock (ThisLock)
 			{
-				Pool.Remove(channel);
-				Recoverables.Remove(channel as IRecoverable);
+				foreach (var channel in channels)
+				{
+					Pool.Remove(channel);
+					Recoverables.Remove(channel as IRecoverable);
+				}
 			}
 		}
 	}

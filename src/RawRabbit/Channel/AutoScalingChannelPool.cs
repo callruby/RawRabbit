@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,6 +15,7 @@ namespace RawRabbit.Channel
 		private readonly AutoScalingOptions _options;
 		private Timer _timer;
 		private readonly ILog _logger = LogProvider.For<AutoScalingChannelPool>();
+		private readonly SemaphoreSlim _addingChannels = new SemaphoreSlim(1, 1);
 
 		public AutoScalingChannelPool(IChannelFactory factory, AutoScalingOptions options)
 		{
@@ -41,15 +43,32 @@ namespace RawRabbit.Channel
 
 		public override async Task<IModel> GetAsync(CancellationToken ct = default(CancellationToken))
 		{
-			var activeChannels = GetActiveChannelCount();
-			if (activeChannels  < _options.MinimunPoolSize)
+			if (GetActiveChannelCount() < _options.MinimunPoolSize)
 			{
-				_logger.Debug("Pool currently has {channelCount}, which is lower than the minimal pool size {minimalPoolSize}. Creating channels.", activeChannels, _options.MinimunPoolSize);
-				var delta = _options.MinimunPoolSize - Pool.Count;
-				for (var i = 0; i < delta; i++)
+				await _addingChannels.WaitAsync(ct);
+				try
 				{
-					var channel = await _factory.CreateChannelAsync(ct);
-					Add(channel);
+					var count = GetActiveChannelCount();
+					if (count < _options.MinimunPoolSize)
+					{
+						_logger.Debug("Pool currently has {channelCount}, which is lower than the minimal pool size {minimalPoolSize}. Creating channels.", count, _options.MinimunPoolSize);
+						var tasks = new List<Task<IModel>>(_options.MinimunPoolSize - count);
+						do
+						{
+							tasks.Add(_factory.CreateChannelAsync(ct));
+						} while (++count < _options.MinimunPoolSize);
+
+						while (tasks.Any())
+						{
+							var t = await Task.WhenAny(tasks);
+							tasks.Remove(t);
+							Add(t.Result);
+						}
+					}
+				}
+				finally
+				{
+					_addingChannels.Release();
 				}
 			}
 
@@ -65,11 +84,19 @@ namespace RawRabbit.Channel
 
 			_timer = new Timer(state =>
 			{
-				var workPerChannel = Pool.Count == 0 ? int.MaxValue : ChannelRequestQueue.Count / Pool.Count;
-				var scaleUp = Pool.Count < _options.MaximumPoolSize;
-				var scaleDown = _options.MinimunPoolSize < Pool.Count;
+				int poolCount;
+				int requestCount;
+				lock (ThisLock)
+				{
+					poolCount = Pool.Count;
+					requestCount = ChannelRequestQueue.Count;
+				}
 
-				_logger.Debug("Channel pool currently has {channelCount} channels open and a total workload of {totalWorkload}", Pool.Count, ChannelRequestQueue.Count);
+				var workPerChannel = poolCount == 0 ? int.MaxValue : requestCount / poolCount;
+				var scaleUp = poolCount < _options.MaximumPoolSize;
+				var scaleDown = _options.MinimunPoolSize < poolCount;
+
+				_logger.Debug("Channel pool currently has {channelCount} channels open and a total workload of {totalWorkload}", poolCount, requestCount);
 				if (scaleUp && _options.DesiredAverageWorkload < workPerChannel)
 				{
 					_logger.Debug("The estimated workload is {averageWorkload} operations/channel, which is higher than the desired workload ({desiredAverageWorkload}). Creating channel.", workPerChannel, _options.DesiredAverageWorkload);
@@ -89,9 +116,13 @@ namespace RawRabbit.Channel
 
 				if (scaleDown && workPerChannel < _options.DesiredAverageWorkload)
 				{
-					_logger.Debug("The estimated workload is {averageWorkload} operations/channel, which is lower than the desired workload ({desiredAverageWorkload}). Creating channel.", workPerChannel, _options.DesiredAverageWorkload);
-					var toRemove = Pool.FirstOrDefault();
-					Pool.Remove(toRemove);
+					_logger.Debug("The estimated workload is {averageWorkload} operations/channel, which is lower than the desired workload ({desiredAverageWorkload}). Deleting channel.", workPerChannel, _options.DesiredAverageWorkload);
+					IModel toRemove;
+					lock (ThisLock)
+					{
+						toRemove = Pool.FirstOrDefault();
+						Remove(toRemove);
+					}
 					Timer disposeTimer = null;
 					disposeTimer = new Timer(o =>
 					{

@@ -20,7 +20,8 @@ namespace RawRabbit.Tests.Channel
 			var connection = new Mock<IConnection>();
 			connectionFactroy
 				.Setup(c => c.CreateConnection(
-					It.IsAny<List<string>>()))
+					It.IsAny<List<string>>(),
+					It.IsAny<string>()))
 				.Returns(connection.Object);
 			connection
 				.Setup(c => c.IsOpen)
@@ -51,7 +52,8 @@ namespace RawRabbit.Tests.Channel
 			var connection = new Mock<IConnection>();
 			connectionFactroy
 				.Setup(c => c.CreateConnection(
-					It.IsAny<List<string>>()))
+					It.IsAny<List<string>>(),
+					It.IsAny<string>()))
 				.Returns(connection.Object);
 			connection
 				.Setup(c => c.IsOpen)
@@ -83,7 +85,8 @@ namespace RawRabbit.Tests.Channel
 			var connection = new Mock<IConnection>();
 			connectionFactroy
 				.Setup(c => c.CreateConnection(
-					It.IsAny<List<string>>()))
+					It.IsAny<List<string>>(),
+					It.IsAny<string>()))
 				.Returns(connection.Object);
 			connection
 				.Setup(c => c.CreateModel())
@@ -110,7 +113,8 @@ namespace RawRabbit.Tests.Channel
 			var recoverable = connection.As<IRecoverable>();
 			connectionFactroy
 				.Setup(c => c.CreateConnection(
-					It.IsAny<List<string>>()))
+					It.IsAny<List<string>>(),
+					It.IsAny<string>()))
 				.Returns(connection.Object);
 			connection
 				.Setup(c => c.CreateModel())

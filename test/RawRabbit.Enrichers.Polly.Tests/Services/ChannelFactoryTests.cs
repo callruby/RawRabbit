@@ -24,7 +24,8 @@ namespace RawRabbit.Enrichers.Polly.Tests.Services
 				.Returns(connection.Object);
 			connectionFactory
 				.SetupSequence(c => c.CreateConnection(
-						It.IsAny<List<string>>()
+						It.IsAny<List<string>>(),
+						It.IsAny<string>()
 					))
 				.Throws(new BrokerUnreachableException(new Exception()))
 				.Throws(new BrokerUnreachableException(new Exception()))
@@ -61,7 +62,8 @@ namespace RawRabbit.Enrichers.Polly.Tests.Services
 				.Returns(connection.Object);
 			connectionFactory
 				.Setup(c => c.CreateConnection(
-					It.IsAny<List<string>>()
+					It.IsAny<List<string>>(),
+					It.IsAny<string>()
 				))
 				.Returns(connection.Object);
 			connection

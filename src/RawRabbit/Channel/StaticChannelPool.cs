@@ -19,7 +19,7 @@ namespace RawRabbit.Channel
 		protected readonly LinkedList<IModel> Pool;
 		protected readonly List<IRecoverable> Recoverables;
 		protected readonly ConcurrentChannelQueue ChannelRequestQueue;
-		private readonly object _workLock = new object();
+		protected object ThisLock { get; } = new object();
 		private LinkedListNode<IModel> _current;
 		private readonly ILog _logger = LogProvider.For<StaticChannelPool>();
 
@@ -38,65 +38,66 @@ namespace RawRabbit.Channel
 
 		private void StartServeChannels()
 		{
-			if (ChannelRequestQueue.IsEmpty || Pool.Count == 0)
+			lock (ThisLock)
 			{
-				_logger.Debug("Unable to serve channels. The pool consists of {channelCount} channels and {channelRequests} requests for channels.");
-				return;
-			}
-
-			if (!Monitor.TryEnter(_workLock))
-			{
-				_logger.Debug("Unable to aquire work lock for service channels.");
-				return;
-			}
-
-			try
-			{
-				_logger.Debug("Starting serving channels.");
-				do
+				try
 				{
-					_current = _current?.Next ?? Pool.First;
-					if (_current == null)
+					if (ChannelRequestQueue.IsEmpty || Pool.Count == 0)
 					{
-						_logger.Debug("Unable to server channels. Pool empty.");
+						_logger.Debug("Unable to serve channels. The pool consists of {channelCount} channels and {channelRequests} requests for channels.", Pool.Count, ChannelRequestQueue.Count);
 						return;
 					}
-					if (_current.Value.IsClosed)
+
+					_logger.Debug("Starting serving channels.");
+					do
 					{
-						Pool.Remove(_current);
-						if (Pool.Count != 0)
+						_current = _current?.Next ?? Pool.First;
+						if (_current == null)
 						{
-							continue;
+							_logger.Debug("Unable to serve channels. Pool empty.");
+							return;
 						}
-						if (Recoverables.Count == 0)
+
+						if (_current.Value.IsClosed)
 						{
-							throw new ChannelAvailabilityException("No open channels in pool and no recoverable channels");
+							Pool.Remove(_current);
+							if (Pool.Count != 0)
+							{
+								continue;
+							}
+
+							if (Recoverables.Count == 0)
+							{
+								throw new ChannelAvailabilityException("No open channels in pool and no recoverable channels");
+							}
+
+							_logger.Info("No open channels in pool, but {recoveryCount} waiting for recovery", Recoverables.Count);
+							return;
 						}
-						_logger.Info("No open channels in pool, but {recoveryCount} waiting for recovery", Recoverables.Count);
-						return;
-					}
-					if (ChannelRequestQueue.TryDequeue(out var cTsc))
-					{
-						cTsc.TrySetResult(_current.Value);
-					}
-				} while (!ChannelRequestQueue.IsEmpty);
-			}
-			catch (Exception e)
-			{
-				_logger.Info(e, "An unhandled exception occured when serving channels.");
-			}
-			finally
-			{
-				Monitor.Exit(_workLock);
+
+						if (ChannelRequestQueue.TryDequeue(out var cTsc))
+						{
+							cTsc.TrySetResult(_current.Value);
+						}
+					} while (!ChannelRequestQueue.IsEmpty);
+				}
+				catch (Exception e)
+				{
+					_logger.Info(e, "An unhandled exception occurred when serving channels.");
+					throw;
+				}
 			}
 		}
 
 		protected virtual int GetActiveChannelCount()
 		{
-			return Enumerable
-				.Concat<object>(Pool, Recoverables)
-				.Distinct()
-				.Count();
+			lock (ThisLock)
+			{
+				return Enumerable
+					.Concat<object>(Pool, Recoverables)
+					.Distinct()
+					.Count();
+			}
 		}
 
 		protected void ConfigureRecovery(IModel channel)
@@ -111,15 +112,21 @@ namespace RawRabbit.Channel
 				_logger.Debug("{Channel {channelNumber} is closed by the application. Channel will remain closed and not be part of the channel pool", channel.ChannelNumber);
 				return;
 			}
-			Recoverables.Add(recoverable);
+			lock (ThisLock)
+			{
+				Recoverables.Add(recoverable);
+			}
 			recoverable.Recovery += (sender, args) =>
 			{
 				_logger.Info("Channel {channelNumber} has been recovered and will be re-added to the channel pool", channel.ChannelNumber);
-				if (Pool.Contains(channel))
+				lock (ThisLock)
 				{
-					return;
+					if (Pool.Contains(channel))
+					{
+						return;
+					}
+					Pool.AddLast(channel);
 				}
-				Pool.AddLast(channel);
 				StartServeChannels();
 			};
 			channel.ModelShutdown += (sender, args) =>
@@ -127,7 +134,10 @@ namespace RawRabbit.Channel
 				if (args.Initiator == ShutdownInitiator.Application)
 				{
 					_logger.Info("Channel {channelNumber} is being closed by the application. No recovery will be performed.", channel.ChannelNumber);
-					Recoverables.Remove(recoverable);
+					lock (ThisLock)
+					{
+						Recoverables.Remove(recoverable);
+					}
 				}
 			};
 		}
